@@ -43,6 +43,7 @@ OUTPUT_DIR = DATA_DIR / 'output'
 QUEUE_DIR = DATA_DIR / 'queue'
 THUMBNAILS_DIR = BASE_DIR / 'thumbnails'
 CONFIG_PATH = BASE_DIR / 'config' / 'scraper_config.json'
+SESSION_PATH = DATA_DIR / 'tiktok_session.json'
 
 
 class ProfileSkippedException(Exception):
@@ -109,15 +110,18 @@ class TikTokScraper:
                 }
             }
 
-    async def start_browser(self, headless: bool = None):
+    async def start_browser(self, headless: bool = None, use_session: bool = True):
         """Start Playwright browser with anti-detection"""
         if headless is None:
             headless = self.config.get('scraper', {}).get('headless', False)
         
+        self._headless = headless
+        self._use_session = use_session
         logger.info("Starting browser with anti-detection...")
         from anti_detection import BrowserFingerprint
         
         self.playwright = await async_playwright().start()
+        self._fingerprint_mgr = BrowserFingerprint(DATA_DIR)
 
         launch_args = [
             '--disable-blink-features=AutomationControlled',
@@ -131,25 +135,58 @@ class TikTokScraper:
             args=launch_args,
         )
 
-        # Apply fingerprint
-        fingerprint_mgr = BrowserFingerprint(DATA_DIR)
-        fingerprint = fingerprint_mgr.get_random_fingerprint()
-        context_options = fingerprint_mgr.get_context_options(fingerprint)
+        await self._new_context()
+        logger.info("Browser started with anti-detection")
 
-        # Inject proxy into browser context if enabled
+    async def _new_context(self):
+        """Create a fresh browser context with a new fingerprint, restoring session if available"""
+        if self.context:
+            await self.context.close()
+
+        fingerprint = self._fingerprint_mgr.get_random_fingerprint()
+        context_options = self._fingerprint_mgr.get_context_options(fingerprint)
+
         proxy_settings = self.proxy_manager.get_playwright_proxy() if self.proxy_manager.enabled else None
         if proxy_settings:
             context_options['proxy'] = proxy_settings
-            logger.info(f"Browser using proxy: {self.proxy_manager.provider} → {self.proxy_manager.host}:{self.proxy_manager.port}")
+
+        # Restore saved session (cookies, localStorage) if available
+        if getattr(self, '_use_session', True) and SESSION_PATH.exists():
+            try:
+                context_options['storage_state'] = str(SESSION_PATH)
+                logger.info("Restoring saved TikTok session (logged in)")
+            except Exception as e:
+                logger.warning(f"Could not restore session: {e}")
 
         self.context = await self.browser.new_context(**context_options)
         self.page = await self.context.new_page()
 
-        # Inject stealth scripts
-        stealth_js = fingerprint_mgr.get_stealth_scripts(fingerprint)
+        stealth_js = self._fingerprint_mgr.get_stealth_scripts(fingerprint)
         await self.page.add_init_script(stealth_js)
 
-        logger.info("Browser started with anti-detection")
+        has_session = getattr(self, '_use_session', True) and SESSION_PATH.exists()
+        logger.info(f"Browser context created (session: {'restored' if has_session else 'anonymous'})")
+
+    async def save_session(self):
+        """Save current browser session (cookies + localStorage) to disk"""
+        if self.context:
+            SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+            state = await self.context.storage_state()
+            with open(SESSION_PATH, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2)
+            logger.info(f"Session saved to {SESSION_PATH}")
+
+    @staticmethod
+    def has_saved_session() -> bool:
+        """Check if a saved session exists"""
+        return SESSION_PATH.exists()
+
+    @staticmethod
+    def clear_session():
+        """Delete saved session"""
+        if SESSION_PATH.exists():
+            SESSION_PATH.unlink()
+            logger.info("Saved session cleared")
 
     async def download_image(self, url: str, username: str, image_type: str, index: int = 0) -> Optional[str]:
         """Download and resize image to ~150KB"""
@@ -215,8 +252,18 @@ class TikTokScraper:
             url = f'https://www.tiktok.com/@{username}'
             logger.info(f"Scraping profile: @{username}")
 
+            # Warm up: visit TikTok homepage first to look like a real user
             await network_sim.randomize_network(self.page)
             await behavior_sim.simulate_pre_navigation(self.page)
+            try:
+                await self.page.goto('https://www.tiktok.com/', wait_until='domcontentloaded', timeout=30000)
+                await asyncio.sleep(random.uniform(2, 4))
+                await behavior_sim.simulate_scroll(self.page)
+                await asyncio.sleep(random.uniform(1, 3))
+            except Exception:
+                pass
+
+            # Navigate to the actual profile
             response = await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
             await behavior_sim.simulate_post_navigation(self.page)
 
@@ -243,29 +290,98 @@ class TikTokScraper:
             except:
                 pass
 
-            # Check page content for error states
-            page_content = await self.page.content()
-            page_content_lower = page_content.lower()
+            # Handle "Something went wrong":
+            #   Attempt 1-2: human-like Refresh button click
+            #   Attempt 3: fresh browser context + re-navigate with warm-up
+            max_refresh_attempts = 3
+            for attempt in range(max_refresh_attempts):
+                visible_text = await self.page.evaluate('() => document.body ? document.body.innerText : ""')
+                if 'something went wrong' not in visible_text.lower():
+                    break
+
+                if attempt < 2:
+                    logger.warning(f"Detected 'Something went wrong' — Refresh button (attempt {attempt + 1}/{max_refresh_attempts})")
+                    try:
+                        refresh_btn = self.page.get_by_role('button', name='Refresh')
+                        await refresh_btn.wait_for(state='visible', timeout=5000)
+                        box = await refresh_btn.bounding_box()
+                        if box:
+                            await refresh_btn.scroll_into_view_if_needed()
+                            await asyncio.sleep(random.uniform(0.3, 0.8))
+
+                            start_x = random.randint(200, 600)
+                            start_y = random.randint(100, 300)
+                            await self.page.mouse.move(start_x, start_y)
+                            await asyncio.sleep(random.uniform(0.2, 0.5))
+
+                            target_x = box['x'] + box['width'] / 2 + random.uniform(-3, 3)
+                            target_y = box['y'] + box['height'] / 2 + random.uniform(-2, 2)
+                            await self.page.mouse.move(target_x, target_y, steps=random.randint(8, 15))
+                            await asyncio.sleep(random.uniform(0.15, 0.4))
+
+                            await self.page.mouse.down()
+                            await asyncio.sleep(random.uniform(0.05, 0.12))
+                            await self.page.mouse.up()
+                        else:
+                            await refresh_btn.click(timeout=5000)
+
+                        await asyncio.sleep(random.uniform(3, 6))
+                    except Exception as e:
+                        logger.warning(f"Refresh button click failed: {e}")
+
+                else:
+                    # Nuclear option: fresh context with new fingerprint + cooldown
+                    cooldown = random.uniform(8, 15)
+                    logger.warning(f"Detected 'Something went wrong' — fresh browser context + {cooldown:.0f}s cooldown (attempt {attempt + 1}/{max_refresh_attempts})")
+                    await asyncio.sleep(cooldown)
+                    await self._new_context()
+
+                    # Warm up again with the fresh context
+                    try:
+                        await self.page.goto('https://www.tiktok.com/', wait_until='domcontentloaded', timeout=30000)
+                        await asyncio.sleep(random.uniform(2, 4))
+                        await behavior_sim.simulate_scroll(self.page)
+                        await asyncio.sleep(random.uniform(1, 2))
+                    except Exception:
+                        pass
+
+                    await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                    await behavior_sim.simulate_post_navigation(self.page)
+                    await behavior_sim.simulate_content_render(self.page)
+
+                # Scroll and wait for video grid
+                await behavior_sim.simulate_scroll(self.page)
+                try:
+                    await self.page.wait_for_selector('[data-e2e="user-post-item"] img, div[class*="DivVideoFeed"] img, article img', timeout=10000)
+                except:
+                    pass
+
+            # Check visible page text for error states (avoid raw HTML which
+            # contains JS template strings that cause false positives)
+            visible_text = await self.page.evaluate('() => document.body ? document.body.innerText : ""')
+            visible_text_lower = visible_text.lower()
 
             # Check for rate limiting
-            if 'http error 429' in page_content_lower or 'too many requests' in page_content_lower:
+            if 'http error 429' in visible_text_lower or 'too many requests' in visible_text_lower:
                 raise RateLimitException("Rate limited")
 
-            # Check for not found / banned
-            not_found_indicators = [
-                "couldn't find this account",
-                "this account is private",
-                "user not found',",
-                "page not available",
-                "couldn&#x27;t find this account",
-            ]
-            for indicator in not_found_indicators:
-                if indicator in page_content_lower:
-                    raise ProfileNotFoundException(f"Profile @{username} not found")
-
-            # Check for private account
-            if 'this account is private' in page_content_lower:
+            # Check for private account first (more specific than not-found)
+            if 'this account is private' in visible_text_lower:
                 raise ProfileSkippedException(f"Profile @{username} is private")
+
+            # Check for not found / banned — only match when the text appears
+            # as a prominent page message, not inside JS bundles
+            not_found_phrases = [
+                "couldn't find this account",
+                "page not available",
+            ]
+            # Only raise not-found when stats are absent (the phrases can
+            # appear in TikTok's generic HTML even on valid profiles)
+            has_stats = any(kw in visible_text_lower for kw in ['following', 'followers', 'likes'])
+            if not has_stats:
+                for phrase in not_found_phrases:
+                    if phrase in visible_text_lower:
+                        raise ProfileNotFoundException(f"Profile @{username} not found")
 
             await behavior_sim.simulate_final_wait(self.page)
 
@@ -535,7 +651,7 @@ def save_queue_file(filepath: str, data: Dict):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-async def scrape_from_queue(queue_file: str, resume: bool = True) -> List[Dict]:
+async def scrape_from_queue(queue_file: str, resume: bool = True, use_session: bool = True) -> List[Dict]:
     """Scrape profiles from a queue file"""
     queue_data = load_queue_file(queue_file)
     
@@ -561,7 +677,7 @@ async def scrape_from_queue(queue_file: str, resume: bool = True) -> List[Dict]:
     results = []
     
     try:
-        await scraper.start_browser()
+        await scraper.start_browser(use_session=use_session)
         
         for i, username in enumerate(remaining, 1):
             print(f"\n[{i}/{len(remaining)}] Scraping: @{username}")
@@ -594,10 +710,11 @@ async def scrape_from_queue(queue_file: str, resume: bool = True) -> List[Dict]:
             # Save checkpoint
             save_queue_file(queue_file, queue_data)
             
-            # Delay between profiles
-            delay = random.uniform(3, 6)
-            logger.info(f"Waiting {delay:.1f}s...")
+            # Cooldown + fresh browser context between profiles
+            delay = random.uniform(8, 15)
+            logger.info(f"Cooldown {delay:.1f}s + resetting browser state...")
             await asyncio.sleep(delay)
+            await scraper._new_context()
         
     finally:
         await scraper.cleanup()
@@ -605,12 +722,12 @@ async def scrape_from_queue(queue_file: str, resume: bool = True) -> List[Dict]:
     return results
 
 
-async def scrape_single(username: str, output_json: bool = False) -> Optional[Dict]:
+async def scrape_single(username: str, output_json: bool = False, use_session: bool = True) -> Optional[Dict]:
     """Scrape a single TikTok profile"""
     scraper = TikTokScraper()
     
     try:
-        await scraper.start_browser()
+        await scraper.start_browser(use_session=use_session)
         
         profile = await scraper.scrape_profile(username)
         
@@ -631,6 +748,89 @@ async def scrape_single(username: str, output_json: bool = False) -> Optional[Di
         
     finally:
         await scraper.cleanup()
+
+
+async def login_interactive():
+    """Open a browser for manual TikTok login, then save the session"""
+    scraper = TikTokScraper()
+
+    try:
+        await scraper.start_browser(headless=False, use_session=False)
+
+        print("\n" + "=" * 55)
+        print("  TikTok Login — Manual Authentication")
+        print("=" * 55)
+        print("\n  A browser window has opened to tiktok.com/login.")
+        print("  Log in with your account (QR code, phone, email, etc).")
+        print("  The session will be saved automatically once login is detected.\n")
+        print("  Waiting for login...", flush=True)
+
+        await scraper.page.goto('https://www.tiktok.com/login', wait_until='domcontentloaded', timeout=60000)
+
+        # Poll for login by checking for session cookies
+        login_cookie_names = {'sessionid', 'sid_tt', 'ssid_ucp_v1', 'sid_guard', 'passport_csrf_token'}
+        max_wait = 300  # 5 minutes
+        poll_interval = 3
+        elapsed = 0
+        logged_in = False
+
+        while elapsed < max_wait:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+            cookies = await scraper.context.cookies()
+            cookie_names = {c.get('name') for c in cookies}
+            found = cookie_names & login_cookie_names
+
+            if found:
+                logged_in = True
+                break
+
+            # Also check if URL changed away from login page
+            current_url = scraper.page.url
+            if '/login' not in current_url and 'tiktok.com' in current_url:
+                logged_in = True
+                break
+
+        if logged_in:
+            # Give a moment for all cookies to settle
+            await asyncio.sleep(2)
+            await scraper.save_session()
+            cookies = await scraper.context.cookies()
+            print(f"\n  ✅ Login detected! Session saved.")
+            print(f"     Cookies captured: {len(cookies)}")
+            print(f"     Session file: {SESSION_PATH}")
+            print("     The scraper will now use this session automatically.\n")
+        else:
+            print(f"\n  ⏱️  Timed out after {max_wait}s waiting for login.")
+            print("     Try again with: python main.py login\n")
+
+    finally:
+        await scraper.cleanup()
+
+
+def logout():
+    """Clear saved TikTok session"""
+    if TikTokScraper.has_saved_session():
+        TikTokScraper.clear_session()
+        print("\n  ✅ Logged out — saved session cleared.")
+        print("     The scraper will now run anonymously.\n")
+    else:
+        print("\n  No saved session found.\n")
+
+
+def session_status():
+    """Show current session status"""
+    if TikTokScraper.has_saved_session():
+        stat = SESSION_PATH.stat()
+        mod_time = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"\n  ✅ Saved session found")
+        print(f"     File: {SESSION_PATH}")
+        print(f"     Last updated: {mod_time}")
+        print(f"     Size: {stat.st_size / 1024:.1f} KB\n")
+    else:
+        print("\n  No saved session — scraper will run anonymously.")
+        print("  Run 'python main.py login' to authenticate.\n")
 
 
 def export_data(output_format: str = 'both'):

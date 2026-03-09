@@ -66,11 +66,35 @@ PROXY_COUNTRY=us
 PROXY_STICKY=true
 ```
 
-> **Note:** TikTok does not require login to view public profiles, so no credentials are needed.
+> **Note:** TikTok does not require login to view public profiles, but logging in is **recommended** for reliable video grid scraping. See the Login section below.
 
 ---
 
 ## Usage
+
+### Login (Recommended)
+
+Logging in to TikTok dramatically improves scraping reliability — especially for video thumbnails and view counts which often fail to load for anonymous visitors.
+
+```bash
+# Open a browser to log in manually (QR code, phone, email, etc.)
+python main.py login
+
+# Check if you have an active session
+python main.py status
+
+# Clear your saved session
+python main.py logout
+```
+
+**How it works:**
+1. `login` opens a Chromium browser to TikTok's login page
+2. You log in manually using any method (QR code is fastest)
+3. Once logged in, press Enter in the terminal to save the session
+4. All future `scrape` commands automatically use the saved session
+5. To scrape anonymously instead, add `--no-login`
+
+The session is saved to `data/tiktok_session.json` (cookies + localStorage). It persists across runs until it expires or you run `logout`.
 
 ### Discover Profiles
 
@@ -91,7 +115,7 @@ python main.py discover --batch
 ### Scrape
 
 ```bash
-# Scrape a single profile by username
+# Scrape a single profile (uses saved session if available)
 python main.py scrape --username charlidamelio
 
 # Scrape from a discovery queue file
@@ -99,6 +123,9 @@ python main.py scrape data/queue/Miami_dance_20260302.json
 
 # Run headless
 python main.py scrape --username charlidamelio --headless
+
+# Scrape anonymously (skip saved session)
+python main.py scrape --username charlidamelio --no-login
 ```
 
 ### Manage & Export
@@ -159,9 +186,31 @@ Each scraped profile is saved to `data/output/{username}.json`:
 
 ---
 
+## ⚠️ "Something went wrong" — Why You Need a Proxy
+
+When scraping multiple profiles, you'll likely see TikTok's video grid fail with **"Something went wrong — Sorry about that! Please try again later."** while the profile header (followers, bio, etc.) still loads fine.
+
+**Why this happens:** TikTok's profile header is server-side rendered, but the video feed is loaded via a separate client-side API call. After a few requests from the same IP, TikTok rate-limits this video feed endpoint. This is **IP-based throttling** — clearing cookies, rotating fingerprints, or clicking the Refresh button won't fix it.
+
+**What works without a proxy:**
+- Profile info (username, display name, bio, bio link)
+- Follower, following, and like counts
+- Profile picture download
+- Influencer tier classification
+
+**What requires a proxy:**
+- Video grid thumbnails and view counts
+- Scraping more than ~3-5 profiles in a session without cooldowns
+
+**The fix:** Use a residential proxy to rotate your IP between scrapes. The scraper has built-in support for this — see the proxy setup below or visit **[ScrapeClaw Proxies](https://www.scrapeclaw.cc/#proxies)** for recommended providers and setup guides.
+
+---
+
 ## 🌐 Residential Proxy (Recommended for Scale)
 
 Running long scraping sessions without a residential proxy will get your IP blocked. The built-in proxy manager handles rotation, sticky sessions, and country targeting automatically.
+
+> **Need help choosing a proxy?** See our [proxy comparison and setup guide](https://www.scrapeclaw.cc/#proxies) for detailed benchmarks, pricing breakdowns, and step-by-step configuration for each provider.
 
 ### Why Use a Residential Proxy?
 
