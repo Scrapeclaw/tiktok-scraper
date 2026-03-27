@@ -268,14 +268,11 @@ class TikTokScraper:
                 if indicator in page_content_lower:
                     raise RateLimitException(f"Bot challenge detected for @{username}")
 
-            # Check for private account BEFORE the not-found loop so it gets the
-            # correct ProfileSkippedException rather than ProfileNotFoundException.
-            if 'this account is private' in page_content_lower:
-                raise ProfileSkippedException(f"Profile @{username} is private")
-
             # Check for genuinely missing / banned profiles.
             # Keep only precise TikTok-specific phrases — do NOT use broad phrases
-            # like "page not available" which also appear on challenge pages.
+            # like "page not available" which also appear on challenge pages, and
+            # do NOT check for "private" via text search as it generates false positives.
+            # Private status will be determined from the extracted data below.
             not_found_indicators = [
                 "couldn't find this account",
                 "couldn&#x27;t find this account",
@@ -417,8 +414,10 @@ class TikTokScraper:
                     statsText.includes('Verified account')
                 );
 
-                // Private account
-                data.is_private = statsText.toLowerCase().includes('this account is private');
+                // Private account — private profiles don't expose follower counts
+                // So if followers = 0 AND we have no videos, it's likely private.
+                // (We'll verify this with a smarter check after extraction below.)
+                data.is_private = false;
 
                 // Video thumbnails from the grid
                 data.content_thumbnails = [];
@@ -456,18 +455,26 @@ class TikTokScraper:
             if not profile_data.get('username'):
                 return None
 
+            # Smart private account detection: if we got 0 followers AND 0 videos,
+            # the account is almost certainly private (TikTok hides all stats for private accounts).
+            # This avoids false positives from text-based checks.
+            followers = profile_data.get('followers', 0)
+            videos_count = profile_data.get('videos_count', 0)
+            if followers == 0 and videos_count == 0:
+                logger.warning(f"Skipping private account: @{username} (0 followers, 0 videos visible)")
+                raise ProfileSkippedException(f"Profile @{username} is private")
+
             if profile_data.get('is_private'):
                 logger.warning(f"Skipping private account: @{username}")
-                return None
+                raise ProfileSkippedException(f"Profile @{username} is private")
 
             # Check minimum followers
             min_followers = self.config.get('scraper', {}).get('min_followers', 1000)
-            if profile_data.get('followers', 0) < min_followers:
-                logger.warning(f"Skipping @{username}: {profile_data.get('followers', 0)} followers < {min_followers}")
+            if followers < min_followers:
+                logger.warning(f"Skipping @{username}: {followers:,} followers < {min_followers}")
                 return None
 
             # Classify influencer tier
-            followers = profile_data.get('followers', 0)
             if followers < 1000:
                 tier = 'nano'
             elif followers < 10000:
