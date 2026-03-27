@@ -1,0 +1,16 @@
+{
+  "mode": "full",
+  "region": "us",
+  "categories": ["dance", "comedy", "fashion", "fitness"],
+  "locations": ["New York", "Los Angeles", "Miami", "Chicago"],
+  "maxProfiles": 20,
+  "minFollowers": 5000,
+  "downloadThumbnails": false,
+  "maxThumbnailsPerProfile": 6,
+  "googleApiKey": "",
+  "googleSearchEngineId": "",
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  }
+}

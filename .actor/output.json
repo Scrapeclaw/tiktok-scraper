@@ -1,0 +1,58 @@
+[
+  {
+    "username": "dancewithraj",
+    "full_name": "Raj Patel",
+    "nickname": "Raj",
+    "bio": "Professional dancer | Mumbai | Collabs: raj@example.com",
+    "bio_link": "https://dancewithraj.com",
+    "followers": 150000,
+    "following": 900,
+    "likes": 8500000,
+    "videos_count": 245,
+    "is_verified": false,
+    "is_private": false,
+    "influencer_tier": "macro",
+    "category": "dance",
+    "location": "Mumbai",
+    "profile_pic_url": "https://p16-sign.tiktokcdn.com/path/to/profile_pic.jpg",
+    "profile_url": "https://www.tiktok.com/@dancewithraj",
+    "content_thumbnails": [
+      "https://p16-sign.tiktokcdn.com/path/to/video1.jpg",
+      "https://p16-sign.tiktokcdn.com/path/to/video2.jpg",
+      "https://p16-sign.tiktokcdn.com/path/to/video3.jpg"
+    ],
+    "video_views": [
+      { "display": "1.2M", "count": 1200000 },
+      { "display": "850K", "count": 850000 },
+      { "display": "2.1M", "count": 2100000 }
+    ],
+    "scrape_timestamp": "2026-03-27T10:30:00Z"
+  },
+  {
+    "username": "nycfoodie_mike",
+    "full_name": "Mike Chen",
+    "nickname": "NYC Foodie Mike",
+    "bio": "Street food explorer | NYC food tours | DM for collabs",
+    "bio_link": "",
+    "followers": 42000,
+    "following": 650,
+    "likes": 2100000,
+    "videos_count": 189,
+    "is_verified": false,
+    "is_private": false,
+    "influencer_tier": "mid",
+    "category": "food",
+    "location": "New York",
+    "profile_pic_url": "https://p16-sign.tiktokcdn.com/path/to/profile_pic2.jpg",
+    "profile_url": "https://www.tiktok.com/@nycfoodie_mike",
+    "content_thumbnails": [
+      "https://p16-sign.tiktokcdn.com/path/to/food1.jpg",
+      "https://p16-sign.tiktokcdn.com/path/to/food2.jpg"
+    ],
+    "video_views": [
+      { "display": "520K", "count": 520000 },
+      { "display": "180K", "count": 180000 }
+    ],
+    "scrape_timestamp": "2026-03-27T10:45:00Z"
+  }
+]
