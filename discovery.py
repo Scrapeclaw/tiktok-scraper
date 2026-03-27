@@ -150,62 +150,81 @@ def discover_profiles_google(
 
 
 def discover_profiles_duckduckgo(
-    location: str, 
-    category: str, 
-    num_results: int = 10
+    location: str,
+    category: str,
+    num_results: int = 10,
+    proxy: Optional[str] = None,
 ) -> List[str]:
     """
-    Discover TikTok profiles using DuckDuckGo HTML search (No API key required)
-    
+    Discover TikTok profiles using DuckDuckGo HTML search (No API key required).
+
     Args:
         location: Location/city to search
         category: Category to search
         num_results: Number of results to fetch
-    
+        proxy: Optional HTTP proxy URL (e.g. from Apify) to route the request through
+
     Returns:
         List of TikTok usernames
     """
-    try:
-        logger.info(f"Falling back to DuckDuckGo search (no API key required)")
-        
-        query = f'site:tiktok.com/@  "{location}" "{category}"'
-        url = "https://html.duckduckgo.com/html/"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://html.duckduckgo.com/'
-        }
-        
-        params = {'q': query}
-        
-        logger.info(f"Searching DuckDuckGo: '{query}'")
-        response = requests.post(url, data=params, headers=headers, timeout=15)
-        
-        if response.status_code != 200:
-            logger.error(f"DuckDuckGo search failed with status {response.status_code}")
-            return []
-            
-        html_content = response.text
-        usernames = []
-        
-        # Look for tiktok.com/@username patterns in result links
-        matches = re.findall(r'tiktok\.com/@([a-zA-Z0-9._]+)/?', html_content)
-        
-        blacklisted = ['explore', 'foryou', 'following', 'live', 'upload', 'search', 'signin', 'legal', 'about']
-        
-        for username in matches:
-            username = username.strip()
-            if username and username not in blacklisted and len(username) > 2:
-                usernames.append(username)
-        
-        unique_usernames = list(set(usernames))[:num_results]
-        logger.info(f"✅ Discovered {len(unique_usernames)} unique profiles from DuckDuckGo")
-        
-        return unique_usernames
+    # Multiple query variations — mirrors the Google approach so we cast a wider net
+    # and are not at the mercy of a single query string.
+    search_queries = [
+        f'site:tiktok.com/@ "{location}" "{category}"',
+        f'site:tiktok.com "{location}" "{category}" creator',
+        f'site:tiktok.com {category} "{location}" tiktok',
+    ]
 
-    except Exception as e:
-        logger.error(f"Error in DuckDuckGo discovery: {e}")
-        return []
+    url = "https://html.duckduckgo.com/html/"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://html.duckduckgo.com/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+
+    # Route through proxy when available so datacenter IPs don't get blocked
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+
+    blacklisted = {
+        'explore', 'foryou', 'following', 'live', 'upload',
+        'search', 'signin', 'legal', 'about', 'tag', 'music',
+    }
+
+    all_usernames: List[str] = []
+
+    for query in search_queries:
+        try:
+            logger.info(f"Searching DuckDuckGo: '{query}'")
+            response = requests.post(
+                url,
+                data={'q': query},
+                headers=headers,
+                proxies=proxies,
+                timeout=20,
+            )
+
+            if response.status_code != 200:
+                logger.warning(f"DuckDuckGo returned {response.status_code} for query: {query}")
+                continue
+
+            matches = re.findall(r'tiktok\.com/@([a-zA-Z0-9._]+)/?', response.text)
+            for username in matches:
+                username = username.strip()
+                if username and username not in blacklisted and len(username) > 2:
+                    all_usernames.append(username)
+
+            # Small polite delay between queries
+            time.sleep(random.uniform(1, 2))
+
+        except Exception as exc:
+            logger.error(f"Error on DuckDuckGo query '{query}': {exc}")
+            continue
+
+    unique_usernames = list(dict.fromkeys(all_usernames))[:num_results]
+    logger.info(f"✅ Discovered {len(unique_usernames)} unique profiles from DuckDuckGo")
+    return unique_usernames
 
 
 def create_queue_file(
