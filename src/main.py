@@ -112,7 +112,6 @@ def run_discovery(
     config: Dict,
     categories: List[str],
     locations: List[str],
-    proxy_url: Optional[str] = None,
 ) -> List[Dict]:
     """Use discovery.py (sync, requests-based) to find TikTok usernames."""
     from discovery import discover_profiles_google, discover_profiles_duckduckgo
@@ -127,10 +126,9 @@ def run_discovery(
                 if config["google_search"]["enabled"]:
                     usernames = discover_profiles_google(location, category, 10, config)
                 else:
-                    # Pass proxy so DuckDuckGo requests don't hit datacenter-IP blocks
-                    usernames = discover_profiles_duckduckgo(
-                        location, category, 10, proxy=proxy_url
-                    )
+                    # DuckDuckGo works fine from Apify's own IPs — routing it through
+                    # the residential proxy causes 202 soft-rejects from DuckDuckGo.
+                    usernames = discover_profiles_duckduckgo(location, category, 10)
 
                 for u in usernames:
                     if u and u not in seen:
@@ -473,7 +471,7 @@ async def main():
 
         elif mode == "discovery_only":
             logger.info("discovery_only mode: running discovery, pushing usernames to dataset…")
-            discovered = run_discovery(config, categories, locations, proxy_url=proxy_url)
+            discovered = run_discovery(config, categories, locations)
             logger.info(f"Discovered {len(discovered)} profiles")
             for p in discovered:
                 await Actor.push_data(p)
@@ -490,7 +488,7 @@ async def main():
                 logger.info(f"Resuming from saved state ({len(state['profiles'])} profiles)")
                 profiles_to_scrape = state["profiles"]
             else:
-                discovered = run_discovery(config, categories, locations, proxy_url=proxy_url)
+                discovered = run_discovery(config, categories, locations)
                 logger.info(f"Discovery found {len(discovered)} profiles")
                 profiles_to_scrape = discovered
                 await Actor.set_value(
