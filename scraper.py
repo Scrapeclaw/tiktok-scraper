@@ -251,21 +251,41 @@ class TikTokScraper:
             if 'http error 429' in page_content_lower or 'too many requests' in page_content_lower:
                 raise RateLimitException("Rate limited")
 
-            # Check for not found / banned
+            # Check for TikTok bot challenge / CAPTCHA page — must come BEFORE the
+            # not-found check because challenge pages often contain generic phrases
+            # like "page not available" that would otherwise trigger a false positive.
+            challenge_indicators = [
+                'slide to verify',
+                'verify you are human',
+                'verification required',
+                'please verify',
+                'are you a robot',
+                'human verification',
+                'tiktok_verify',
+                'verifycaptcha',
+            ]
+            for indicator in challenge_indicators:
+                if indicator in page_content_lower:
+                    raise RateLimitException(f"Bot challenge detected for @{username}")
+
+            # Check for private account BEFORE the not-found loop so it gets the
+            # correct ProfileSkippedException rather than ProfileNotFoundException.
+            if 'this account is private' in page_content_lower:
+                raise ProfileSkippedException(f"Profile @{username} is private")
+
+            # Check for genuinely missing / banned profiles.
+            # Keep only precise TikTok-specific phrases — do NOT use broad phrases
+            # like "page not available" which also appear on challenge pages.
             not_found_indicators = [
                 "couldn't find this account",
-                "this account is private",
-                "user not found',",
-                "page not available",
                 "couldn&#x27;t find this account",
+                "user not found",
+                "this account doesn't exist",
+                "this account is unavailable",
             ]
             for indicator in not_found_indicators:
                 if indicator in page_content_lower:
                     raise ProfileNotFoundException(f"Profile @{username} not found")
-
-            # Check for private account
-            if 'this account is private' in page_content_lower:
-                raise ProfileSkippedException(f"Profile @{username} is private")
 
             await behavior_sim.simulate_final_wait(self.page)
 

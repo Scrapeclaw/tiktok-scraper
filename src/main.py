@@ -246,12 +246,33 @@ class ApifyTikTokScraper:
                     logger.warning(f"Profile not found: @{username}")
                     stats["failed"] += 1
                 except ProfileSkippedException:
-                    logger.info(f"Profile skipped: @{username}")
+                    logger.info(f"Profile skipped (private): @{username}")
                     stats["skipped"] += 1
-                except RateLimitException:
-                    logger.warning("Rate limited — sleeping 60 s…")
-                    await asyncio.sleep(60)
-                    stats["failed"] += 1
+                except RateLimitException as exc:
+                    # Bot challenge or rate limit — sleep then retry once before giving up
+                    logger.warning(f"Rate limit / challenge for @{username}: {exc} — sleeping 90 s then retrying…")
+                    await asyncio.sleep(90)
+                    try:
+                        profile = await inst.scrape_profile(username, category, location)
+                        if profile:
+                            if not self.download_thumbnails:
+                                profile.pop("profile_pic_local", None)
+                                profile.pop("content_thumbnails_local", None)
+                            else:
+                                await self._store_thumbnails(profile, username)
+                            await Actor.push_data(profile)
+                            followers = profile.get("followers", 0)
+                            logger.info(
+                                f"[{self._scraped + 1}] Pushed (retry): @{username} "
+                                f"({followers:,} followers, tier={profile.get('influencer_tier')})"
+                            )
+                            self._scraped += 1
+                            stats["success"] += 1
+                        else:
+                            stats["skipped"] += 1
+                    except Exception:
+                        logger.error(f"Retry also failed for @{username} — skipping.")
+                        stats["failed"] += 1
                 except DailyLimitException:
                     logger.error("TikTok daily limit reached. Stopping.")
                     break
